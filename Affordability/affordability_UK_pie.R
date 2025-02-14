@@ -1,7 +1,8 @@
 library(haven)
 library(dplyr)
 library(tidyverse)
-## import data from 2023 Cost and Food Survey --- NOTE THIS IS NOT COMMERCIAL DATA
+library(ggrepel)
+## import data from 2023 Cost and Food Survey --- NOTE THIS IS NOT COMMERCIAL DATA. It is available to be purchased for £50 per dataset (year) + £450 for the project. 
 data <- read_stata("LCF/dvhh_ukanon_2022.dta")
 df <- read_stata("LCF/dvhh_urbanrural_ukanon_2022.dta")
 
@@ -286,9 +287,9 @@ ggplot(summary_expenditure_donut,
                 title = "Average UK Household Expenditure (2023)",
                 fill = "Category"
         )
-# Print the data used in the visualization
 print(summary_expenditure_donut %>% 
               select(category, amount, percentage) %>% 
               arrange(desc(percentage)))
+ggsave()
 
 write_csv(summary_expenditure_donut, "UK_expenditure.csv")
