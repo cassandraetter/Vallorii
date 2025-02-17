@@ -7,13 +7,12 @@ library(gridExtra)
 library(ggthemes)
 library(plotly)
 library(viridis)
+library(ggrepel)
+
 
 setwd("~/Documents/GitHub/Vallorii/LCF")
 
-library(haven)
-library(dplyr)
-library(tidyverse)
-library(ggrepel)
+
 
 # Function to normalize column names to lowercase
 normalize_colnames <- function(data) {
@@ -62,7 +61,7 @@ process_year <- function(year) {
                                                 "cc1311t", "cc3111t", "cc1316t", "c45112t", "c45212t",
                                                 "c73112t", "c93411t", "c93412t", "c45214t", "c45222t",
                                                 "p116t", "p118t", "p119t",
-                                                "p352p", "p344p", "p389p", "p392p", "p515p")))) %>%
+                                                "p352p", "p344p", "p389p", "p392p", "p515p", "weighta")))) %>%
                         mutate(year = year)
                 
                 print(paste("Columns after select:", paste(names(processed_data), collapse=", ")))
@@ -249,7 +248,7 @@ summary_by_year <- combined_data %>%
         summarise(across(c(starts_with("annual_"),
                            energy_expenditure, water_expenditure,
                            telecomms_expenditure, rail_expenditure),
-                         ~mean(., na.rm = TRUE))) %>%
+                         ~weighted.mean(., w = weighta, na.rm = TRUE))) %>%
         mutate(across(everything(), ~round(., 2)))
 
 # Save the summary
@@ -267,15 +266,41 @@ plot_data <- summary_by_year %>%
 
 # Create the plot
 ggplot(plot_data, aes(x = year, y = amount, color = expenditure_type)) +
-        geom_line() +
-        geom_point() +
+        geom_line(size = 1, alpha = 0.8) +
+        geom_point(size = 3, shape = 21, fill = "white") +
+        scale_y_continuous(
+                expand = c(0, 0),
+                limits = c(0, 2000),
+                labels = scales::label_dollar(prefix = "£", big.mark = ",")
+        ) +
+        scale_x_continuous(breaks = unique(plot_data$year)) +
+        scale_color_brewer(
+                palette = "Set2",
+                labels = c("Energy", "Rail", "Telecoms", "Water") 
+        ) +
         theme_minimal() +
-        labs(title = "UK Household Expenditure Trends",
-             x = "Year",
-             y = "Annual Expenditure (£)",
-             color = "Expenditure Type") +
-        scale_color_brewer(palette = "Set1") +
-        theme(legend.position = "bottom")
+        theme(
+                plot.title = element_text(face = "bold", size = 14, margin = margin(b = 20)),
+                plot.subtitle = element_text(size = 11, color = "grey40", margin = margin(b = 20)),
+                axis.title = element_text(size = 11),
+                axis.text = element_text(size = 10),
+                legend.title = element_text(size = 11),
+                legend.text = element_text(size = 10),
+                panel.grid.minor = element_blank(),
+                panel.grid.major.x = element_blank(),
+                panel.grid.major.y = element_line(color = "grey90"),
+                legend.position = "bottom",
+                legend.box = "horizontal",
+                legend.margin = margin(t = 20),
+                legend.key.width = unit(2, "cm"),
+                plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+        ) +
+        labs(
+                title = "UK Household Expenditure (2018-2022)",
+                x = "Year",
+                y = "Annual Expenditure",
+                color = "Category"
+        )
 
 # Save the plot
 ggsave("expenditure_trends.png", width = 12, height = 8)
@@ -293,9 +318,9 @@ components_data <- summary_by_year %>%
                         telecomms_expenditure + rail_expenditure,
                 housing = annual_housing_expenses,
                 food = annual_food,
-                council_tax = annual_council_tax
+                taxes = annual_taxes
         ) %>%
-        select(year, utilities, housing, food, council_tax) %>%
+        select(year, utilities, housing, food, taxes) %>%
         pivot_longer(-year, 
                      names_to = "component",
                      values_to = "expenditure") %>%
@@ -303,7 +328,7 @@ components_data <- summary_by_year %>%
                 component = str_to_title(component),
                 # Reorder factors for stacked area chart
                 component = factor(component, 
-                                   levels = c("Council Tax", "Food", "Utilities", "Housing"))
+                                   levels = c("Taxes", "Food", "Utilities", "Housing"))
         )
 
 # Create stacked area chart
@@ -312,10 +337,10 @@ components_plot <- ggplot(components_data,
         geom_area() +
         scale_fill_viridis(discrete = TRUE, direction = -1) +
         theme_minimal() +
-        labs(title = "Major Household Expense Components",
+        labs(title = "Major Household Expense Components (2018 - 2022)",
              subtitle = "Utilities includes energy, water, telecommunications, and rail",
              x = "Year",
-             y = "Annual Expenditure (£)",
+             y = " Average Annual HH Expenditure (£, Current)",
              fill = "Component") +
         scale_y_continuous(labels = scales::comma_format()) +
         theme(
@@ -336,10 +361,10 @@ components_pct_plot <- components_data %>%
         geom_area() +
         scale_fill_viridis(discrete = TRUE, direction = -1) +
         theme_minimal() +
-        labs(title = "Relative Share of Major Household Expenses",
+        labs(title = "Relative Share of Major Household Expenses (2018-2022)",
              subtitle = "Utilities includes energy, water, telecommunications, and rail",
              x = "Year",
-             y = "Percentage of Total Expenses",
+             y = "Percentage of Total Expenses (£, Current)",
              fill = "Component") +
         scale_y_continuous(labels = function(x) paste0(x, "%")) +
         theme(
@@ -350,39 +375,6 @@ components_pct_plot <- components_data %>%
                 legend.title = element_text(face = "bold")
         )
 
-# Create utilities breakdown for latest year
-latest_year <- max(summary_by_year$year)
-utilities_breakdown <- summary_by_year %>%
-        filter(year == latest_year) %>%
-        select(year, energy_expenditure, water_expenditure, 
-               telecomms_expenditure, rail_expenditure) %>%
-        pivot_longer(-year, 
-                     names_to = "category",
-                     values_to = "amount") %>%
-        mutate(
-                category = case_when(
-                        category == "energy_expenditure" ~ "Energy",
-                        category == "water_expenditure" ~ "Water",
-                        category == "telecomms_expenditure" ~ "Telecommunications",
-                        category == "rail_expenditure" ~ "Rail"
-                )
-        )
-
-# Create utilities breakdown pie chart
-utilities_pie <- ggplot(utilities_breakdown, 
-                        aes(x = "", y = amount, fill = category)) +
-        geom_bar(stat = "identity", width = 1) +
-        coord_polar("y", start = 0) +
-        scale_fill_viridis(discrete = TRUE) +
-        theme_void() +
-        labs(title = paste("Utilities Breakdown -", latest_year),
-             subtitle = "Distribution of utilities expenditure components",
-             fill = "Category") +
-        theme(
-                legend.position = "bottom",
-                plot.title = element_text(face = "bold", size = 14),
-                plot.subtitle = element_text(size = 10, color = "gray50")
-        )
 
 # Calculate utilities trends
 utilities_trends <- summary_by_year %>%
@@ -395,38 +387,12 @@ utilities_trends <- summary_by_year %>%
                 yoy_change = (utilities - lag(utilities)) / lag(utilities) * 100
         )
 
-# Create utilities trend plot
-utilities_trend_plot <- ggplot(utilities_trends, 
-                               aes(x = year)) +
-        geom_line(aes(y = utilities), size = 1.2, color = "#440154FF") +
-        geom_point(aes(y = utilities), size = 3, color = "#440154FF") +
-        theme_minimal() +
-        labs(title = "Utilities Expenditure Trend",
-             subtitle = "Total household spending on energy, water, telecommunications, and rail",
-             x = "Year",
-             y = "Annual Expenditure (£)") +
-        scale_y_continuous(labels = scales::comma_format()) +
-        theme(
-                plot.title = element_text(face = "bold", size = 14),
-                plot.subtitle = element_text(size = 10, color = "gray50"),
-                axis.title = element_text(face = "bold")
-        )
 
 # Save all plots
 ggsave("major_components.png", components_plot, width = 12, height = 8)
-ggsave("components_percentage.png", components_pct_plot, width = 12, height = 8)
-ggsave("utilities_breakdown.png", utilities_pie, width = 10, height = 10)
-ggsave("utilities_trend.png", utilities_trend_plot, width = 12, height = 8)
 
-# Create interactive versions
 components_plotly <- ggplotly(components_plot)
-components_pct_plotly <- ggplotly(components_pct_plot)
-utilities_trend_plotly <- ggplotly(utilities_trend_plot)
-
-# Save interactive plots
 htmlwidgets::saveWidget(components_plotly, "major_components.html")
-htmlwidgets::saveWidget(components_pct_plotly, "components_percentage.html")
-htmlwidgets::saveWidget(utilities_trend_plotly, "utilities_trend.html")
 
 # Calculate and print summary statistics
 summary_stats <- components_data %>%
