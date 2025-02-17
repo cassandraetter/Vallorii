@@ -2,6 +2,9 @@ library(haven)
 library(dplyr)
 library(tidyverse)
 library(ggrepel)
+library(ggforce)
+library(plotly)
+
 ## import data from 2023 Cost and Food Survey --- NOTE THIS IS NOT COMMERCIAL DATA. It is available to be purchased for £50 per dataset (year) + £450 for the project. 
 data <- read_stata("LCF/dvhh_ukanon_2022.dta")
 df <- read_stata("LCF/dvhh_urbanrural_ukanon_2022.dta")
@@ -17,14 +20,18 @@ filtered_subset <- data %>%
                # Council and utilities
                ctsproxy, ctwproxy,
                # Expenditure categories
-               p515tp, p538t, p540t, p539t, p607t, p542, p551tp,p607t, 
+               p515tp, p538t, p540t, p539t, p607t, p542, p551tp, p607t,
+               p071h, b228,
                # Specific items
                c12111t, c12121t, c11251t, c11141t, c72211t,
                cc1311t, cc3111t, cc1316t, c45112t, c45212t,
                c73112t, c93411t, c93412t, c45214t, c45222t, 
                # Personal expenditure and income
                p116t, p118t, p119t,
-               P352p, p344p, P389p, P392p, p515p) %>%
+               P352p, p344p, P389p, P392p, p515p,
+               
+               ##weight
+               weighta) %>%
         rename(
                 household_size = a049,#household size 
                 gas_electric_included = a103, #gas and electric in accomodation
@@ -94,7 +101,9 @@ filtered_subset <- data %>%
                 gross_normal = p344p, #gross normal weekly household income - top coded 
                 disposable_income = P389p, # normal weekly disposable income top coded
                 taxes = P392p, # income tax payments less refunds top coded 
-                transport_costs = p607t # COICOP: Total transport costs - children and adults 
+                transport_costs = p607t, # COICOP: Total transport costs - children and adults 
+                pension = p071h, # pension and superannuation contribution -- household 
+                pension2 = b228 # personal pension
         )
 
 filtered_subset <- filtered_subset %>%
@@ -108,6 +117,8 @@ annual_expenditure <- filtered_subset %>%
                 annual_gross_normal = gross_normal * 52,
                 annual_disposable_income = disposable_income * 52,
                 annual_taxes = taxes * 52,
+                annual_pension = pension * 52,
+                annual_pension2 = pension2 * 52,
                 
                 # Housing and utilities (weekly to annual)
                 annual_rent_net = rent_net * 52,
@@ -150,8 +161,8 @@ annual_expenditure <- filtered_subset %>%
                 annual_petrol = petrol_exp * 52,
                 
                 # Travel and holidays (already annual)
-                annual_domestic_flights = domestic_flights,
-                annual_int_flights = int_flight,
+                annual_domestic_flights = domestic_flights * 52,
+                annual_int_flights = int_flight * 52,
                 annual_holiday_UK = holiday_UK,
                 annual_cruise_UK = cruise_UK,
                 annual_holiday_outside = holiday_outside,
@@ -189,7 +200,8 @@ annual_expenditure <- filtered_subset %>%
                 energy_expenditure = pmax(standard_bill_energy, dual_fuel_energy, prepayment_energy, na.rm = TRUE),
                 water_expenditure = rowSums(select(., annual_council_water, annual_water_charge, annual_sewage_charge), na.rm = TRUE),
                 telecomms_expenditure = rowSums(select(., annual_telephone, annual_internet, annual_mobile, annual_comms), na.rm = TRUE),
-                rail_expenditure = rowSums(select(., annual_railway), na.rm = TRUE)
+                rail_expenditure = rowSums(select(., annual_railway), na.rm = TRUE), 
+                airfare_expenditure = rowSums(select(., annual_domestic_flights, annual_int_flights), na.rm = TRUE), 
         )
 
 
@@ -197,11 +209,11 @@ summary_expenditure <- annual_expenditure %>%
         # Summarize all annual columns and combined expenditures to get means
         summarise(across(c(starts_with("annual_"), 
                            energy_expenditure, water_expenditure,
-                           telecomms_expenditure, rail_expenditure, housing_expenses), 
-                         ~mean(., na.rm = TRUE))) %>%
+                           telecomms_expenditure, rail_expenditure, housing_expenses, airfare_expenditure), 
+                         ~weighted.mean(., w = weighta, na.rm = TRUE))) %>%
         # Round all values to 2 decimal places
         mutate(across(everything(), ~round(., 2))) %>%
-        select(annual_gross_income, annual_taxes, annual_food, annual_total_exp, energy_expenditure,telecomms_expenditure, rail_expenditure, water_expenditure, annual_housing_expenses )
+        select(annual_gross_income, annual_taxes, annual_food, annual_total_exp, annual_pension, annual_housing_expenses, energy_expenditure,telecomms_expenditure, rail_expenditure, water_expenditure, airfare_expenditure )
 
 
 
@@ -250,46 +262,68 @@ avg_income <- summary_expenditure_long %>%
 
 
 # Prepare donut data
+library(plotly)
+
+# Prepare the data with formatted labels
 summary_expenditure_donut <- summary_expenditure_long %>%
         filter(!category %in% c("Total Exp", "Gross Income", "Council Tax")) %>%
         mutate(
                 percentage = amount / sum(amount) * 100,
-                label = paste0(category, "\n", round(percentage, 1), "%"),
-                # Calculate midpoint position for each segment
-                position = cumsum(percentage) - percentage/2
+                # Create hover text with full details
+                hover_text = paste0(
+                        category, "<br>",
+                        "£", format(round(amount), big.mark=","), "<br>",
+                        round(percentage, 1), "%"
+                ),
+                # Create simpler label for the boxes
+                label = paste0(
+                        category, "<br>",
+                        round(percentage, 1), "%"
+                )
         )
 
-# Create donut chart
-ggplot(summary_expenditure_donut, 
-       aes(x = 2, y = percentage, fill = category)) +
-        geom_col(width = 1) +
-        coord_polar(theta = "y") +
-        geom_label_repel(
-                aes(label = label),
-                position = position_stack(vjust = 0.5),
-                size = 3,
-                show.legend = FALSE
-        ) +
-        # Add center annotation with better formatting
-        annotate("text", x = 0, y = 0, 
-                 label = paste0("Average Income\n£", format(round(avg_income), big.mark=",")),
-                 size = 4.5, fontface = "bold", lineheight = 1.2,
-                 hjust = 0.5, vjust = 0.5) +
-        scale_fill_brewer(palette = "Set3") +
-        xlim(0.5, 2.5) +
-        theme_void() +
-        theme(
-                legend.position = "none",
-                plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
-                plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
-        ) +
-        labs(
-                title = "Average UK Household Expenditure (2023)",
-                fill = "Category"
+p <- plot_ly(summary_expenditure_donut, 
+             labels = ~category, 
+             values = ~percentage,
+             type = 'pie',
+             hole = 0.6,
+             textposition = 'outside',
+             textinfo = 'label+percent',
+             hovertext = ~label,
+             hoverinfo = 'text',
+             insidetextfont = list(color = '#FFFFFF'),
+             marker = list(
+                     colors = RColorBrewer::brewer.pal(nrow(summary_expenditure_donut), "Set3"),
+                     line = list(color = '#FFFFFF', width = 1)
+             )
+) %>%
+        layout(
+                title = list(
+                        text = "UK Household Expenditure (2022)",
+                        font = list(size = 20)
+                ),
+                showlegend = FALSE,
+                annotations = list(
+                        list(
+                                x = 0.5,
+                                y = 0.5,
+                                text = "Household<br>Expenditure<br>2022",
+                                showarrow = FALSE,
+                                font = list(size = 14)
+                        )
+                ),
+                margin = list(t = 50, l = 50, r = 50, b = 50)
         )
+
+# Save as HTML file
+htmlwidgets::saveWidget(p, "expenditure_donut.html")
+
+
 print(summary_expenditure_donut %>% 
               select(category, amount, percentage) %>% 
               arrange(desc(percentage)))
-ggsave()
+
+ggsave("expend_donut.png", width = 12, height = 8)
+
 
 write_csv(summary_expenditure_donut, "UK_expenditure.csv")
