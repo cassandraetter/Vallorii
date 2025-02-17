@@ -4,6 +4,7 @@ library(tidyverse)
 library(ggrepel)
 library(ggforce)
 library(plotly)
+library(Hmisc)
 
 ## import data from 2023 Cost and Food Survey --- NOTE THIS IS NOT COMMERCIAL DATA. It is available to be purchased for £50 per dataset (year) + £450 for the project. 
 data <- read_stata("LCF/dvhh_ukanon_2022.dta")
@@ -213,7 +214,7 @@ summary_expenditure <- annual_expenditure %>%
                          ~weighted.mean(., w = weighta, na.rm = TRUE))) %>%
         # Round all values to 2 decimal places
         mutate(across(everything(), ~round(., 2))) %>%
-        select(annual_gross_income, annual_taxes, annual_food, annual_total_exp, annual_pension, annual_housing_expenses, energy_expenditure,telecomms_expenditure, rail_expenditure, water_expenditure, airfare_expenditure )
+        select(annual_gross_income, annual_disposable_income, annual_taxes, annual_food, annual_total_exp, annual_pension, annual_housing_expenses, energy_expenditure,telecomms_expenditure, rail_expenditure, water_expenditure, airfare_expenditure )
 
 
 
@@ -255,34 +256,23 @@ ggplot(summary_expenditure_long, aes(x = category, y = amount)) +
 print(summary_expenditure_long)
 
 
-# Calculate total income for center label
-avg_income <- summary_expenditure_long %>%
-        filter(category == "Gross Income") %>%
-        pull(amount)
 
-
-# Prepare donut data
-library(plotly)
-
-# Prepare the data with formatted labels
-summary_expenditure_donut <- summary_expenditure_long %>%
-        filter(!category %in% c("Total Exp", "Gross Income", "Council Tax")) %>%
+summary_expenditure_donut_1 <- summary_expenditure_long %>%
+        filter(!category %in% c("Total Exp", "Gross Income", "Council Tax", "Disposable Income")) %>%
         mutate(
                 percentage = amount / sum(amount) * 100,
-                # Create hover text with full details
                 hover_text = paste0(
                         category, "<br>",
                         "£", format(round(amount), big.mark=","), "<br>",
                         round(percentage, 1), "%"
                 ),
-                # Create simpler label for the boxes
                 label = paste0(
                         category, "<br>",
                         round(percentage, 1), "%"
                 )
         )
 
-p <- plot_ly(summary_expenditure_donut, 
+p <- plot_ly(summary_expenditure_donut_1, 
              labels = ~category, 
              values = ~percentage,
              type = 'pie',
@@ -299,7 +289,7 @@ p <- plot_ly(summary_expenditure_donut,
 ) %>%
         layout(
                 title = list(
-                        text = "UK Household Expenditure (2022)",
+                        text = "UK Average Household Expenditure (2022)",
                         font = list(size = 20)
                 ),
                 showlegend = FALSE,
@@ -307,7 +297,7 @@ p <- plot_ly(summary_expenditure_donut,
                         list(
                                 x = 0.5,
                                 y = 0.5,
-                                text = "Household<br>Expenditure<br>2022",
+                                text = "Average Household<br>Expenditure<br>(2022)",
                                 showarrow = FALSE,
                                 font = list(size = 14)
                         )
@@ -319,11 +309,212 @@ p <- plot_ly(summary_expenditure_donut,
 htmlwidgets::saveWidget(p, "expenditure_donut.html")
 
 
-print(summary_expenditure_donut %>% 
+print(summary_expenditure_donut_1 %>% 
               select(category, amount, percentage) %>% 
               arrange(desc(percentage)))
 
+
 ggsave("expend_donut.png", width = 12, height = 8)
 
+#### As a % of Average Gross Income #### 
+
+gross_income <- summary_expenditure_long %>%
+        filter(category == "Gross Income") %>%
+        pull(amount)
+
+summary_expenditure_donut_2 <- summary_expenditure_long %>%
+        filter(!category %in% c("Total Exp", "Gross Income", "Council Tax", "Disposable Income")) %>%
+        mutate(
+                percentage = (amount / gross_income) * 100,
+                hover_text = paste0(
+                        category, "<br>",
+                        "£", format(round(amount), big.mark=","), "<br>",
+                        round(percentage, 1), "% of income"
+                ),
+                label = paste0(
+                        category, "<br>",
+                        round(percentage, 1), "% of income"
+                )
+        )
+
+# Create the donut chart
+p2 <- plot_ly(summary_expenditure_donut_2, 
+        labels = ~category, 
+        values = ~percentage,
+        type = 'pie',
+        hole = 0.6,
+        textposition = 'outside',
+        textinfo = 'custom',
+        customdata = ~label,
+        hovertext = ~hover_text,
+        hoverinfo = 'text',
+        insidetextfont = list(color = '#FFFFFF'),
+        marker = list(
+                colors = RColorBrewer::brewer.pal(nrow(summary_expenditure_donut_2), "Set3"),
+                line = list(color = '#FFFFFF', width = 1)
+        )
+) %>%
+        layout(
+                title = list(
+                        text = "Household Expenditure as % of Gross Income (2022)",
+                        font = list(size = 20)
+                ),
+                showlegend = FALSE,
+                annotations = list(
+                        list(
+                                x = 0.5,
+                                y = 0.5,
+                                text = paste0("Average UK <br>Income<br>£47,937"),
+                                showarrow = FALSE,
+                                font = list(size = 14)
+                        )
+                ),
+                margin = list(t = 50, l = 50, r = 50, b = 50)
+        )
+
+htmlwidgets::saveWidget(p2, "expenditure_donut_gross.html")
 
 write_csv(summary_expenditure_donut, "UK_expenditure.csv")
+
+
+### Low income Decile Wallet### 
+
+## Create weighted deciles on disposable income (net)
+
+# Calculate weighted decile breaks
+disposable_breaks <- wtd.quantile(annual_expenditure$annual_disposable_income,
+                                  weights = annual_expenditure$weighta,
+                                  probs = seq(0, 1, by = 0.1),
+                                  na.rm = TRUE)
+
+# Add decile column to data
+annual_expenditure <- annual_expenditure %>%
+        mutate(
+                disposable_income_decile = cut(annual_disposable_income,
+                                               breaks = disposable_breaks,
+                                               labels = 1:10,
+                                               include.lowest = TRUE)
+        )
+
+# Function to get decile income
+get_decile_income <- function(decile_num) {
+        income <- annual_expenditure %>%
+                filter(disposable_income_decile == decile_num) %>%
+                summarise(income = weighted.mean(annual_disposable_income, w = weighta, na.rm = TRUE)) %>%
+                pull(income)
+        return(round(income))
+}
+
+# Function to create focused expenditure summary for a specific decile
+create_decile_summary <- function(decile_num) {
+        # Get decile specific data
+        decile_data <- annual_expenditure %>%
+                filter(disposable_income_decile == decile_num)
+        
+        # Calculate mean disposable income for this decile
+        mean_income <- weighted.mean(decile_data$annual_disposable_income, 
+                                     w = decile_data$weighta, 
+                                     na.rm = TRUE)
+        
+        # Calculate weighted means for specific expenditures
+        decile_means <- decile_data %>%
+                summarise(
+                        food = weighted.mean(annual_food, w = weighta, na.rm = TRUE),
+                        housing = weighted.mean(annual_housing_expenses, w = weighta, na.rm = TRUE),
+                        energy = weighted.mean(energy_expenditure, w = weighta, na.rm = TRUE),
+                        telecomms = weighted.mean(telecomms_expenditure, w = weighta, na.rm = TRUE),
+                        rail = weighted.mean(rail_expenditure, w = weighta, na.rm = TRUE),
+                        water = weighted.mean(water_expenditure, w = weighta, na.rm = TRUE),
+                        airfare = weighted.mean(airfare_expenditure, w = weighta, na.rm = TRUE),
+                        pension = weighted.mean(annual_pension, w = weighta, na.rm = TRUE)
+                )
+        
+        # Convert to long format with consistent text formatting
+        decile_summary <- decile_means %>%
+                pivot_longer(everything(),
+                             names_to = "category",
+                             values_to = "amount") %>%
+                mutate(
+                        category = str_to_title(category),
+                        percentage = (amount / mean_income) * 100,
+                        # Create consistent text for both label and hover
+                        label_text = paste0(category, "<br>", round(percentage, 1), "%"),
+                        hover_text = paste0(
+                                category, "<br>",
+                                "£", format(round(amount), big.mark=","), "<br>",
+                                round(percentage, 1), "% of disposable income"
+                        )
+                )
+        
+        return(decile_summary)
+}
+
+# Create summaries for deciles 1-3
+decile1_data <- create_decile_summary(1)
+decile2_data <- create_decile_summary(2)
+decile3_data <- create_decile_summary(3)
+
+# Create visualization with consistent labels
+# Create visualization with ONLY our custom percentages
+fig <- plot_ly(width = 1200, height = 800) %>%
+        add_pie(data = decile1_data,
+                labels = ~category,
+                values = ~amount,        # Use amount instead of percentage for the pie segments
+                type = 'pie',
+                hole = 0.6,
+                domain = list(x = c(0, 0.28), y = c(0, 1)),
+                textinfo = 'text',       # Only show our custom text
+                textposition = 'outside',
+                text = ~label_text,
+                hoverinfo = 'text',
+                hovertext = ~hover_text,
+                marker = list(colors = RColorBrewer::brewer.pal(nrow(decile1_data), "Set3"))) %>%
+        add_pie(data = decile2_data,
+                labels = ~category,
+                values = ~amount,
+                type = 'pie',
+                hole = 0.6,
+                domain = list(x = c(0.36, 0.64), y = c(0, 1)),
+                textinfo = 'text',
+                textposition = 'outside',
+                text = ~label_text,
+                hoverinfo = 'text',
+                hovertext = ~hover_text,
+                marker = list(colors = RColorBrewer::brewer.pal(nrow(decile2_data), "Set3"))) %>%
+        add_pie(data = decile3_data,
+                labels = ~category,
+                values = ~amount,
+                type = 'pie',
+                hole = 0.6,
+                domain = list(x = c(0.72, 1), y = c(0, 1)),
+                textinfo = 'text',
+                textposition = 'outside',
+                text = ~label_text,
+                hoverinfo = 'text',
+                hovertext = ~hover_text,
+                marker = list(colors = RColorBrewer::brewer.pal(nrow(decile3_data), "Set3"))) %>%
+        layout(
+                title = list(
+                        text = "Key Expenditure Categories by Income Decile (2022)",
+                        font = list(size = 20)
+                ),
+                showlegend = FALSE,
+                annotations = list(
+                        list(x = 0.14, y = 1,
+                             text = paste0("Decile 1<br>Disposable Income: £",
+                                           format(get_decile_income(1), big.mark=",")),
+                             showarrow = FALSE, font = list(size = 12)),
+                        list(x = 0.5, y = 1,
+                             text = paste0("Decile 2<br>Disposable Income: £",
+                                           format(get_decile_income(2), big.mark=",")),
+                             showarrow = FALSE, font = list(size = 12)),
+                        list(x = 0.86, y = 1,
+                             text = paste0("Decile 3<br>Disposable Income: £",
+                                           format(get_decile_income(3), big.mark=",")),
+                             showarrow = FALSE, font = list(size = 12))
+                ),
+                margin = list(t = 100, r = 100, b = 100, l = 100)
+        )
+
+# Save the plot
+htmlwidgets::saveWidget(fig, "decile_comparison.html", selfcontained = TRUE)
